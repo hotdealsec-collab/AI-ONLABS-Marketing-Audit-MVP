@@ -268,8 +268,6 @@ def prepare_internal_df(df: pd.DataFrame) -> pd.DataFrame:
         df = parse_dates(df, "date")
     numeric_cols = ["sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue"]
     df = convert_numeric_columns(df, numeric_cols)
-    if "channel" not in df.columns:
-        df["channel"] = "Unknown"
     return df
 
 def prepare_initiative_df(df: pd.DataFrame) -> pd.DataFrame:
