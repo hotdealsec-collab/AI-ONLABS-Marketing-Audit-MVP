@@ -366,7 +366,9 @@ def build_funnel_summary(internal_df: pd.DataFrame) -> pd.DataFrame:
         {"step": "Purchase", "value": agg.get("purchase", 0)},
     ]
     funnel = pd.DataFrame(rows)
-    funnel["from_prev_rate"] = safe_divide(funnel["value"], funnel["value"].shift(1)).fillna(1.0)
+    # 변경된 부분: fillna()를 제거하고 직접 첫 번째 행에 1.0(100%)을 넣어줍니다.
+    funnel["from_prev_rate"] = safe_divide(funnel["value"], funnel["value"].shift(1))
+    funnel.loc[0, "from_prev_rate"] = 1.0 
     return funnel
 
 def initiative_pre_post_analysis(media_df: pd.DataFrame, initiative_df: pd.DataFrame, pre_days: int = 7, post_days: int = 7) -> pd.DataFrame:
