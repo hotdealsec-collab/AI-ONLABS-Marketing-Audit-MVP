@@ -29,7 +29,6 @@ GOOGLE_ADS_MAPPING = {
     "広告見出し 1": "headline_1"
 }
 
-# GA4 데이터 컬럼 매핑 (영문/일문)
 INTERNAL_ALIASES = {
     "campaign": ["campaign", "campaign_name", "campaign name", "キャンペーン"],
     "sessions": ["sessions", "session", "セッション"],
@@ -58,6 +57,16 @@ def clean_google_ads_report(file) -> pd.DataFrame:
     df = pd.read_csv(file, skiprows=2)
     df = df.rename(columns=GOOGLE_ADS_MAPPING)
     
+    # 1. '合計(Total)'이 포함된 구글 애즈 요약 행 제거 (데이터 중복 방지)
+    mask = df.astype(str).apply(lambda x: x.str.contains("合計", na=False)).any(axis=1)
+    df = df[~mask]
+
+    # 2. 모든 텍스트 컬럼을 명시적 String으로 변환 (PyArrow Mixed Type Error 방지)
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].fillna("Unknown").astype(str)
+            
+    # 3. 숫자형 변환
     numeric_cols = ["spend", "impressions", "clicks", "conversions", "revenue"]
     for col in numeric_cols:
         if col in df.columns:
@@ -92,6 +101,27 @@ def status_color(action: str) -> str:
 
 def style_action(val):
     return f"background-color: {status_color(val)}"
+
+# --- [신규 추가] 안전한 테이블 렌더링 헬퍼 함수 ---
+def display_table(df: pd.DataFrame, show_cols: List[str]):
+    display_df = df[[c for c in show_cols if c in df.columns]].copy()
+    styler = display_df.style
+    
+    if "action" in display_df.columns:
+        styler = styler.map(style_action, subset=["action"])
+        
+    base_format = {
+        "spend": "{:,.0f}", "impressions": "{:,.0f}", "clicks": "{:,.0f}",
+        "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}",
+        "CVR": "{:.2%}", "CPA": "{:,.2f}", "ROAS": "{:.2f}",
+        "sessions": "{:,.0f}", "product_views": "{:,.0f}", "add_to_cart": "{:,.0f}",
+        "checkout": "{:,.0f}", "purchase": "{:,.0f}", "revenue": "{:,.0f}",
+        "Session to Purchase": "{:.2%}"
+    }
+    # 데이터프레임에 존재하는 컬럼만 필터링하여 포맷 적용 (에러 방지)
+    valid_format = {k: v for k, v in base_format.items() if k in display_df.columns}
+    
+    st.dataframe(styler.format(valid_format, na_rep="-"), use_container_width=True)
 
 # =========================
 # Core KPI & Logic
@@ -222,13 +252,11 @@ c_spend, c_clicks, c_ctr, c_conv, c_cpa = get_totals(ctrl_df)
 
 if not exp_df.empty:
     e_spend, e_clicks, e_ctr, e_conv, e_cpa = get_totals(exp_df)
-    
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Spend", f"¥ {e_spend:,.0f}", f"{(e_spend - c_spend) / c_spend * 100:.1f}%" if c_spend > 0 else "0%", delta_color="inverse")
     col2.metric("Clicks", f"{e_clicks:,.0f}", f"{(e_clicks - c_clicks) / c_clicks * 100:.1f}%" if c_clicks > 0 else "0%")
     col3.metric("CTR", f"{e_ctr:.2%}", f"{(e_ctr - c_ctr) * 100:.2f}%p")
     col4.metric("Conversions", f"{e_conv:,.0f}", f"{(e_conv - c_conv) / c_conv * 100:.1f}%" if c_conv > 0 else "0%")
-    
     cpa_delta = (e_cpa - c_cpa) / c_cpa * 100 if c_cpa > 0 else 0
     col5.metric("CPA", f"¥ {e_cpa:,.0f}", f"{cpa_delta:.1f}%" if c_cpa > 0 else "0%", delta_color="inverse")
 else:
@@ -247,16 +275,8 @@ campaign_agg = combined_campaign.groupby(["Group", "campaign"], dropna=False)[nu
 campaign_agg = calculate_media_kpi(campaign_agg)
 campaign_agg["action"] = campaign_agg.apply(lambda x: assign_action(x, thresholds), axis=1)
 
-show_cols = ["Group", "campaign", "action", "spend", "impressions", "clicks", "CTR", "CPC", "conversions", "CVR", "CPA", "ROAS"]
-show_cols = [c for c in show_cols if c in campaign_agg.columns]
-
-st.dataframe(
-    campaign_agg[show_cols].sort_values(by=["campaign", "Group"]).style.map(style_action, subset=["action"]).format({
-        "spend": "{:,.0f}", "impressions": "{:,.0f}", "clicks": "{:,.0f}",
-        "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}",
-        "CVR": "{:.2%}", "CPA": "{:,.2f}", "ROAS": "{:.2f}"
-    }, na_rep="-"), use_container_width=True
-)
+display_table(campaign_agg.sort_values(by=["campaign", "Group"]), 
+              show_cols=["Group", "campaign", "action", "spend", "impressions", "clicks", "CTR", "CPC", "conversions", "CVR", "CPA", "ROAS"])
 
 # --- 3. Internal Funnel (GA4) ---
 if internal_file:
@@ -289,12 +309,8 @@ if internal_file:
             camp_funnel = internal_df.groupby("campaign", dropna=False).sum(numeric_only=True).reset_index()
             camp_funnel["Session to Purchase"] = safe_divide(camp_funnel["purchase"], camp_funnel["sessions"])
             
-            f_show = [c for c in ["campaign", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"] if c in camp_funnel.columns]
-            st.dataframe(camp_funnel[f_show].sort_values("sessions", ascending=False).style.format({
-                "sessions": "{:,.0f}", "product_views": "{:,.0f}", "add_to_cart": "{:,.0f}",
-                "checkout": "{:,.0f}", "purchase": "{:,.0f}", "revenue": "{:,.0f}",
-                "Session to Purchase": "{:.2%}"
-            }, na_rep="-"), use_container_width=True)
+            display_table(camp_funnel.sort_values("sessions", ascending=False), 
+                          show_cols=["campaign", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"])
 
 # --- 4. Search Term Audit ---
 if search_term_file:
@@ -303,15 +319,12 @@ if search_term_file:
     term_df_raw = clean_google_ads_report(search_term_file)
     
     if "search_term" in term_df_raw.columns:
-        term_df_raw["search_term"] = term_df_raw["search_term"].fillna("").astype(str)
         t_cols = [c for c in ["spend", "impressions", "clicks", "conversions", "revenue"] if c in term_df_raw.columns]
-        
         group_cols = ["search_term"]
         if "campaign" in term_df_raw.columns: group_cols.insert(0, "campaign")
             
         term_df = term_df_raw.groupby(group_cols, dropna=False)[t_cols].sum().reset_index()
         term_df = calculate_media_kpi(term_df)
-        
         term_df["term_class"] = term_df["search_term"].apply(lambda x: classify_search_term(x, term_lists))
         
         def assign_term_action(row):
@@ -320,12 +333,9 @@ if search_term_file:
             return "KEEP"
             
         term_df["action"] = term_df.apply(assign_term_action, axis=1)
-        term_df = term_df.sort_values("spend", ascending=False)
         
-        t_show = [c for c in ["campaign", "search_term", "term_class", "action", "spend", "clicks", "CTR", "conversions", "CPA"] if c in term_df.columns]
-        st.dataframe(term_df[t_show].style.map(style_action, subset=["action"]).format({
-            "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "conversions": "{:,.0f}", "CPA": "{:,.2f}"
-        }, na_rep="-"), use_container_width=True)
+        display_table(term_df.sort_values("spend", ascending=False), 
+                      show_cols=["campaign", "search_term", "term_class", "action", "spend", "clicks", "CTR", "conversions", "CPA"])
     else:
         st.warning("업로드된 検索語句 레포트에 '検索語句' 컬럼이 없습니다.")
 
@@ -343,12 +353,9 @@ if adgroup_file:
         ag_df = ag_df_raw.groupby(group_cols, dropna=False)[ag_cols].sum().reset_index()
         ag_df = calculate_media_kpi(ag_df)
         ag_df["action"] = ag_df.apply(lambda x: assign_action(x, thresholds), axis=1)
-        ag_df = ag_df.sort_values("spend", ascending=False)
         
-        ag_show = [c for c in ["campaign", "ad_group", "action", "spend", "clicks", "CTR", "CPC", "conversions", "CPA", "ROAS"] if c in ag_df.columns]
-        st.dataframe(ag_df[ag_show].style.map(style_action, subset=["action"]).format({
-            "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}", "CPA": "{:,.2f}", "ROAS": "{:.2f}"
-        }, na_rep="-"), use_container_width=True)
+        display_table(ag_df.sort_values("spend", ascending=False), 
+                      show_cols=["campaign", "ad_group", "action", "spend", "clicks", "CTR", "CPC", "conversions", "CPA", "ROAS"])
 
 # --- 6. Ad / Creative Audit ---
 if ad_file:
@@ -359,21 +366,16 @@ if ad_file:
     ad_identifier = "headline_1" if "headline_1" in ad_df_raw.columns else ("final_url" if "final_url" in ad_df_raw.columns else None)
     
     if ad_identifier:
-        ad_df_raw[ad_identifier] = ad_df_raw[ad_identifier].fillna("Unknown").astype(str)
         ad_cols = [c for c in ["spend", "impressions", "clicks", "conversions", "revenue"] if c in ad_df_raw.columns]
-        
         group_cols = [ad_identifier]
         if "campaign" in ad_df_raw.columns: group_cols.insert(0, "campaign")
         if "ad_group" in ad_df_raw.columns: group_cols.insert(1, "ad_group")
             
         ad_df = ad_df_raw.groupby(group_cols, dropna=False)[ad_cols].sum().reset_index()
         ad_df = calculate_media_kpi(ad_df)
-        ad_df = ad_df.sort_values("spend", ascending=False)
         
-        ad_show = group_cols + [c for c in ["spend", "clicks", "CTR", "CPC", "conversions", "CPA"] if c in ad_df.columns]
-        st.dataframe(ad_df[ad_show].style.format({
-            "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}", "CPA": "{:,.2f}"
-        }, na_rep="-"), use_container_width=True)
+        display_table(ad_df.sort_values("spend", ascending=False), 
+                      show_cols=group_cols + ["spend", "clicks", "CTR", "CPC", "conversions", "CPA"])
 
 # --- 7. Landing Page Audit ---
 if lp_file:
@@ -382,14 +384,9 @@ if lp_file:
     lp_df_raw = clean_google_ads_report(lp_file)
     
     if "landing_page" in lp_df_raw.columns:
-        lp_df_raw["landing_page"] = lp_df_raw["landing_page"].fillna("Unknown").astype(str)
         lp_cols = [c for c in ["spend", "impressions", "clicks", "conversions", "revenue"] if c in lp_df_raw.columns]
-        
         lp_df = lp_df_raw.groupby("landing_page", dropna=False)[lp_cols].sum().reset_index()
         lp_df = calculate_media_kpi(lp_df)
-        lp_df = lp_df.sort_values("spend", ascending=False)
         
-        lp_show = ["landing_page"] + [c for c in ["spend", "clicks", "CTR", "CPC", "conversions", "CPA", "ROAS"] if c in lp_df.columns]
-        st.dataframe(lp_df[lp_show].style.format({
-            "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}", "CPA": "{:,.2f}", "ROAS": "{:.2f}"
-        }, na_rep="-"), use_container_width=True)
+        display_table(lp_df.sort_values("spend", ascending=False), 
+                      show_cols=["landing_page", "spend", "clicks", "CTR", "CPC", "conversions", "CPA", "ROAS"])
