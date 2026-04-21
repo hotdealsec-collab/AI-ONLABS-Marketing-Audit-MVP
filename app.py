@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 # Page Config
 # =========================
 st.set_page_config(page_title="AI-ONLABS Marketing Audit MVP", layout="wide")
-st.title("🚀 AI-ONLABS Marketing Audit MVP (A/B Test ver)")
-st.caption("Google Ads Raw 리포트 전용 대시보드입니다. 모든 리포트는 일자(Day) 세그먼트 없이 누적으로 업로드하세요.")
+st.title("🚀 AI-ONLABS Marketing Audit MVP (A/B Test + GA4)")
+st.caption("Google Ads 및 GA4 리포트 전용 대시보드입니다. 모든 리포트는 일자(Day) 세그먼트 없이 누적으로 업로드하세요.")
 
 # =========================
 # Constants & Mapping
@@ -27,6 +27,17 @@ GOOGLE_ADS_MAPPING = {
     "ランディング ページ": "landing_page",
     "最終ページ URL": "final_url",
     "広告見出し 1": "headline_1"
+}
+
+# GA4 데이터 컬럼 매핑 (영문/일문)
+INTERNAL_ALIASES = {
+    "campaign": ["campaign", "campaign_name", "campaign name", "キャンペーン"],
+    "sessions": ["sessions", "session", "セッション"],
+    "product_views": ["product_views", "product_view", "view_item", "views", "商品ビュー", "表示"],
+    "add_to_cart": ["add_to_cart", "atc", "addtocart", "カートに追加", "カート追加"],
+    "checkout": ["checkout", "begin_checkout", "チェックアウト"],
+    "purchase": ["purchase", "purchases", "transactions", "購入", "コンバージョン"],
+    "revenue": ["revenue", "sales", "purchase_value", "value", "収益", "総収益"],
 }
 
 BRAND_TERMS_DEFAULT = ["brand", "official", "company", "ganzo"]
@@ -51,6 +62,23 @@ def clean_google_ads_report(file) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", "", regex=False).str.replace(" --", "0", regex=False).str.replace("--", "0", regex=False)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
+def prepare_internal_df(file) -> pd.DataFrame:
+    df = pd.read_csv(file)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    rename_map = {}
+    for std, aliases in INTERNAL_ALIASES.items():
+        for alias in aliases:
+            if alias in df.columns:
+                rename_map[alias] = std
+                break
+    df = df.rename(columns=rename_map)
+    numeric_cols = ["sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
@@ -116,16 +144,17 @@ def classify_search_term(term: str, term_lists: Dict[str, List[str]]) -> str:
 # =========================
 # Sidebar Controls
 # =========================
-st.sidebar.header("📁 1. A/B Test Reports")
+st.sidebar.header("📁 1. A/B Test Reports (Ads)")
 st.sidebar.caption("기간 비교 또는 세팅 비교를 위해 업로드하세요.")
 control_file = st.sidebar.file_uploader("1. キャンペーン (Control / 기준)", type=["csv"])
 experiment_file = st.sidebar.file_uploader("2. キャンペーン (Experiment / 비교) - 선택", type=["csv"])
 
 st.sidebar.header("📁 2. Detailed Reports (Optional)")
-search_term_file = st.sidebar.file_uploader("3. 検索語句 (검색어)", type=["csv"])
-adgroup_file = st.sidebar.file_uploader("4. 広告グループ (광고그룹)", type=["csv"])
-ad_file = st.sidebar.file_uploader("5. 広告 (광고/소재)", type=["csv"])
-lp_file = st.sidebar.file_uploader("6. ランディング ページ (랜딩페이지)", type=["csv"])
+internal_file = st.sidebar.file_uploader("3. GA4 (Internal) 데이터", type=["csv"])
+search_term_file = st.sidebar.file_uploader("4. 検索語句 (검색어)", type=["csv"])
+adgroup_file = st.sidebar.file_uploader("5. 広告グループ (광고그룹)", type=["csv"])
+ad_file = st.sidebar.file_uploader("6. 広告 (광고/소재)", type=["csv"])
+lp_file = st.sidebar.file_uploader("7. ランディング ページ (랜딩페이지)", type=["csv"])
 
 st.sidebar.header("⚙️ 3. Action Thresholds")
 thresholds = {
@@ -176,11 +205,10 @@ if experiment_file:
 combined_campaign = pd.concat([ctrl_df, exp_df], ignore_index=True) if not exp_df.empty else ctrl_df.copy()
 
 # --- 1. Executive Summary (A/B Test Comparison) ---
-st.subheader("📌 Executive Summary (Control vs Experiment)")
+st.subheader("📌 Executive Summary (Google Ads)")
 if not exp_df.empty:
     st.caption("Experiment 리포트가 업로드되어 Control 대비 증감률(Delta)이 표시됩니다.")
 
-# KPI 집계
 def get_totals(df):
     spend = df['spend'].sum() if 'spend' in df.columns else 0
     clicks = df['clicks'].sum() if 'clicks' in df.columns else 0
@@ -201,7 +229,6 @@ if not exp_df.empty:
     col3.metric("CTR", f"{e_ctr:.2%}", f"{(e_ctr - c_ctr) * 100:.2f}%p")
     col4.metric("Conversions", f"{e_conv:,.0f}", f"{(e_conv - c_conv) / c_conv * 100:.1f}%" if c_conv > 0 else "0%")
     
-    # CPA는 낮아져야 좋으므로 inverse 처리
     cpa_delta = (e_cpa - c_cpa) / c_cpa * 100 if c_cpa > 0 else 0
     col5.metric("CPA", f"¥ {e_cpa:,.0f}", f"{cpa_delta:.1f}%" if c_cpa > 0 else "0%", delta_color="inverse")
 else:
@@ -212,10 +239,9 @@ else:
     col4.metric("Conversions (Control)", f"{c_conv:,.0f}")
     col5.metric("CPA (Control)", f"¥ {c_cpa:,.0f}")
 
-
 # --- 2. Campaign Audit ---
 st.markdown("---")
-st.subheader("📊 1. Campaign Audit")
+st.subheader("📊 1. Campaign Audit (Ads)")
 numeric_cols = [c for c in ["spend", "impressions", "clicks", "conversions", "revenue"] if c in combined_campaign.columns]
 campaign_agg = combined_campaign.groupby(["Group", "campaign"], dropna=False)[numeric_cols].sum().reset_index()
 campaign_agg = calculate_media_kpi(campaign_agg)
@@ -232,10 +258,48 @@ st.dataframe(
     }, na_rep="-"), use_container_width=True
 )
 
-# --- 3. Search Term Audit ---
+# --- 3. Internal Funnel (GA4) ---
+if internal_file:
+    st.markdown("---")
+    st.subheader("🛒 2. Internal Funnel (GA4)")
+    internal_df = prepare_internal_df(internal_file)
+    
+    if not internal_df.empty:
+        agg = internal_df.sum(numeric_only=True)
+        rows = [
+            {"step": "Sessions", "value": agg.get("sessions", 0)},
+            {"step": "Product Views", "value": agg.get("product_views", 0)},
+            {"step": "Add to Cart", "value": agg.get("add_to_cart", 0)},
+            {"step": "Checkout", "value": agg.get("checkout", 0)},
+            {"step": "Purchase", "value": agg.get("purchase", 0)},
+        ]
+        funnel = pd.DataFrame(rows)
+        funnel["from_prev_rate"] = safe_divide(funnel["value"], funnel["value"].shift(1))
+        funnel.loc[0, "from_prev_rate"] = 1.0
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Sessions", f"{agg.get('sessions', 0):,.0f}")
+        c2.metric("Total Purchases", f"{agg.get('purchase', 0):,.0f}")
+        c3.metric("Session to Purchase Rate", f"{safe_divide(agg.get('purchase', 0), agg.get('sessions', 0)):.2%}")
+        
+        st.dataframe(funnel.style.format({"value": "{:,.0f}", "from_prev_rate": "{:.2%}"}, na_rep="-"), use_container_width=True)
+        
+        if "campaign" in internal_df.columns:
+            st.markdown("**📌 Campaign Breakdown (GA4)**")
+            camp_funnel = internal_df.groupby("campaign", dropna=False).sum(numeric_only=True).reset_index()
+            camp_funnel["Session to Purchase"] = safe_divide(camp_funnel["purchase"], camp_funnel["sessions"])
+            
+            f_show = [c for c in ["campaign", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"] if c in camp_funnel.columns]
+            st.dataframe(camp_funnel[f_show].sort_values("sessions", ascending=False).style.format({
+                "sessions": "{:,.0f}", "product_views": "{:,.0f}", "add_to_cart": "{:,.0f}",
+                "checkout": "{:,.0f}", "purchase": "{:,.0f}", "revenue": "{:,.0f}",
+                "Session to Purchase": "{:.2%}"
+            }, na_rep="-"), use_container_width=True)
+
+# --- 4. Search Term Audit ---
 if search_term_file:
     st.markdown("---")
-    st.subheader("🔎 2. Search Term Audit")
+    st.subheader("🔎 3. Search Term Audit")
     term_df_raw = clean_google_ads_report(search_term_file)
     
     if "search_term" in term_df_raw.columns:
@@ -265,10 +329,10 @@ if search_term_file:
     else:
         st.warning("업로드된 検索語句 레포트에 '検索語句' 컬럼이 없습니다.")
 
-# --- 4. Ad Group Audit ---
+# --- 5. Ad Group Audit ---
 if adgroup_file:
     st.markdown("---")
-    st.subheader("📂 3. Ad Group Audit")
+    st.subheader("📂 4. Ad Group Audit")
     ag_df_raw = clean_google_ads_report(adgroup_file)
     
     if "ad_group" in ag_df_raw.columns:
@@ -286,10 +350,10 @@ if adgroup_file:
             "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}", "CPA": "{:,.2f}", "ROAS": "{:.2f}"
         }, na_rep="-"), use_container_width=True)
 
-# --- 5. Ad / Creative Audit ---
+# --- 6. Ad / Creative Audit ---
 if ad_file:
     st.markdown("---")
-    st.subheader("🖼️ 4. Ad / Creative Audit")
+    st.subheader("🖼️ 5. Ad / Creative Audit")
     ad_df_raw = clean_google_ads_report(ad_file)
     
     ad_identifier = "headline_1" if "headline_1" in ad_df_raw.columns else ("final_url" if "final_url" in ad_df_raw.columns else None)
@@ -311,10 +375,10 @@ if ad_file:
             "spend": "{:,.0f}", "clicks": "{:,.0f}", "CTR": "{:.2%}", "CPC": "{:,.2f}", "conversions": "{:,.0f}", "CPA": "{:,.2f}"
         }, na_rep="-"), use_container_width=True)
 
-# --- 6. Landing Page Audit ---
+# --- 7. Landing Page Audit ---
 if lp_file:
     st.markdown("---")
-    st.subheader("🌐 5. Landing Page Audit")
+    st.subheader("🌐 6. Landing Page Audit")
     lp_df_raw = clean_google_ads_report(lp_file)
     
     if "landing_page" in lp_df_raw.columns:
