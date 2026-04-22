@@ -368,3 +368,48 @@ if internal_file:
             
             display_table(camp_funnel.sort_values("sessions", ascending=False), 
                           show_cols=["campaign", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"])
+
+# =========================
+# Export for LLM (NotebookLM)
+# =========================
+st.markdown("---")
+st.subheader("🤖 Export for AI Analysis (NotebookLM)")
+st.caption("아래 버튼을 눌러 전체 분석 결과를 하나의 텍스트 파일로 다운로드하고, NotebookLM(또는 ChatGPT)에 업로드하세요.")
+
+# 다운로드할 통합 리포트 텍스트 생성
+report_lines = []
+report_lines.append("# AI-ONLABS Marketing Audit Full Report\n")
+report_lines.append("이 데이터는 마케팅 캠페인의 성과 및 판단 로직(SCALE, OPTIMIZE, REDUCE, KILL, REMOVE)이 포함된 결과입니다.\n")
+
+if 'campaign_agg' in locals() and not campaign_agg.empty:
+    report_lines.append("## 1. Campaign Audit Data")
+    report_lines.append(campaign_agg.to_csv(index=False))
+
+if 'ag_df' in locals() and not ag_df.empty:
+    report_lines.append("## 2. Ad Group Audit Data")
+    report_lines.append(ag_df.to_csv(index=False))
+
+if 'kw_df' in locals() and not kw_df.empty:
+    report_lines.append("## 3. Keyword Audit Data")
+    report_lines.append(kw_df.to_csv(index=False))
+
+if 'lp_df' in locals() and not lp_df.empty:
+    report_lines.append("## 4. Landing Page Audit Data")
+    report_lines.append(lp_df.to_csv(index=False))
+
+if 'funnel' in locals() and not funnel.empty:
+    report_lines.append("## 5. Internal Funnel (GA4 Total)")
+    report_lines.append(funnel.to_csv(index=False))
+
+if 'camp_funnel' in locals() and not camp_funnel.empty:
+    report_lines.append("## 6. Campaign Breakdown (GA4)")
+    report_lines.append(camp_funnel.to_csv(index=False))
+
+full_report_text = "\n\n".join(report_lines)
+
+st.download_button(
+    label="📥 Download Full Audit Report (.txt)",
+    data=full_report_text,
+    file_name="AI_ONLABS_Audit_Report_for_LLM.txt",
+    mime="text/plain"
+)
