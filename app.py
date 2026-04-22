@@ -7,7 +7,7 @@ from typing import Dict, List
 # Page Config
 # =========================
 st.set_page_config(page_title="AI-ONLABS Marketing Audit MVP", layout="wide")
-st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.2)")
+st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.3)")
 st.caption("A/B 캠페인 비교부터 광고 소재, GA4 랜딩페이지 분석까지 지원하는 퍼포먼스 마케터 전용 대시보드입니다.")
 
 # =========================
@@ -39,21 +39,6 @@ INTERNAL_ALIASES = {
     "revenue": ["revenue", "sales", "value", "収益", "総収益", "合計収益"],
 }
 
-# 백그라운드에서 동작할 기본 키워드 룰
-BRAND_TERMS_DEFAULT = ["brand", "official", "company", "ganzo"]
-CATEGORY_TERMS_DEFAULT = ["wallet", "bag", "backpack", "tote", "crossbody", "財布", "バッグ"]
-INFO_TERMS_DEFAULT = ["how", "what", "best", "review", "reviews", "compare", "おすすめ", "比較"]
-COMPETITOR_TERMS_DEFAULT = ["amazon", "rakuten", "zozo", "temu", "shein", "楽天", "土屋鞄"]
-NOISE_TERMS_DEFAULT = ["free", "download", "job", "求人", "中古", "used", "repair", "修理", "買取"]
-
-term_lists = {
-    "brand_terms": BRAND_TERMS_DEFAULT,
-    "category_terms": CATEGORY_TERMS_DEFAULT,
-    "info_terms": INFO_TERMS_DEFAULT,
-    "competitor_terms": COMPETITOR_TERMS_DEFAULT,
-    "noise_terms": NOISE_TERMS_DEFAULT,
-}
-
 # =========================
 # Utilities & Preprocessing
 # =========================
@@ -69,7 +54,6 @@ def clean_google_ads_report(file) -> pd.DataFrame:
         df = df.rename(columns={"インタラクション": "クリック数"})
         
     df = df.rename(columns=GOOGLE_ADS_MAPPING)
-    
     mask = df.astype(str).apply(lambda x: x.str.contains("合計", na=False)).any(axis=1)
     df = df[~mask]
 
@@ -96,6 +80,11 @@ def prepare_internal_df(file) -> pd.DataFrame:
                 break
     df = df.rename(columns=rename_map)
     
+    # [핵심 수정] PyArrow 에러 방지를 위해 텍스트 컬럼 명시적 형변환
+    for col in ["campaign", "landing_page"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("Unknown").astype(str)
+            
     numeric_cols = ["sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue"]
     for col in numeric_cols:
         if col in df.columns:
@@ -173,16 +162,6 @@ def assign_action(row: pd.Series, thresholds: Dict[str, float]) -> str:
     if ctr >= thresholds["high_ctr"] and (cvr < thresholds["good_cvr"] or cpa > thresholds["max_cpa"]): return "OPTIMIZE"
     if ctr <= thresholds["low_ctr"] and spend >= thresholds["reduce_spend_limit"]: return "REDUCE"
     return "HOLD"
-
-def classify_keyword(term: str, term_lists: Dict[str, List[str]]) -> str:
-    if not isinstance(term, str) or term.strip() == "": return "Unknown"
-    t = term.lower().strip()
-    if any(x in t for x in term_lists["brand_terms"]): return "Brand"
-    if any(x in t for x in term_lists["competitor_terms"]): return "Competitor"
-    if any(x in t for x in term_lists["noise_terms"]): return "Noise"
-    if any(x in t for x in term_lists["info_terms"]): return "Informational"
-    if any(x in t for x in term_lists["category_terms"]): return "Category"
-    return "Other"
 
 # =========================
 # Sidebar Controls
@@ -311,7 +290,6 @@ if keyword_file:
         if "campaign" in kw_df_raw.columns: group_cols.insert(0, "campaign")
         kw_df = kw_df_raw.groupby(group_cols, dropna=False)[t_cols].sum().reset_index()
         kw_df = calculate_media_kpi(kw_df)
-        kw_df["keyword_class"] = kw_df["keyword"].apply(lambda x: classify_keyword(x, term_lists))
         
         def assign_keyword_action(row):
             if row['spend'] >= thresholds['term_cost_remove'] and row.get('conversions', 0) == 0: return "REMOVE"
@@ -320,7 +298,7 @@ if keyword_file:
             
         kw_df["action"] = kw_df.apply(assign_keyword_action, axis=1)
         display_table(kw_df.sort_values("spend", ascending=False), 
-                      show_cols=["campaign", "keyword", "keyword_class", "action", "spend", "clicks", "CTR", "conversions", "CPA"])
+                      show_cols=["campaign", "keyword", "action", "spend", "clicks", "CTR", "conversions", "CPA"])
 
 # --- 5. Ad / Creative Audit ---
 if ad_file:
@@ -359,8 +337,14 @@ if internal_file:
     internal_df = prepare_internal_df(internal_file)
     if not internal_df.empty and "campaign" in internal_df.columns:
         camp_funnel = internal_df.groupby("campaign", dropna=False).sum(numeric_only=True).reset_index()
-        camp_funnel["Session to Purchase"] = safe_divide(camp_funnel["purchase"], camp_funnel["sessions"])
-        display_table(camp_funnel.sort_values("sessions", ascending=False), 
+        
+        # 컬럼 안전 가져오기 (에러 방지)
+        p = camp_funnel.get("purchase", pd.Series(0, index=camp_funnel.index))
+        s = camp_funnel.get("sessions", pd.Series(0, index=camp_funnel.index))
+        camp_funnel["Session to Purchase"] = safe_divide(p, s)
+        
+        sort_by = "sessions" if "sessions" in camp_funnel.columns else None
+        display_table(camp_funnel.sort_values(sort_by, ascending=False) if sort_by else camp_funnel, 
                       show_cols=["campaign", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"])
 
 # --- 8. GA4 Landing Page Funnel ---
@@ -370,8 +354,14 @@ if ga4_lp_file:
     ga4_lp_df = prepare_internal_df(ga4_lp_file)
     if not ga4_lp_df.empty and "landing_page" in ga4_lp_df.columns:
         ga4_lp_agg = ga4_lp_df.groupby("landing_page", dropna=False).sum(numeric_only=True).reset_index()
-        ga4_lp_agg["Session to Purchase"] = safe_divide(ga4_lp_agg["purchase"], ga4_lp_agg["sessions"])
-        display_table(ga4_lp_agg.sort_values("sessions", ascending=False), 
+        
+        # 컬럼 안전 가져오기 (에러 방지)
+        p = ga4_lp_agg.get("purchase", pd.Series(0, index=ga4_lp_agg.index))
+        s = ga4_lp_agg.get("sessions", pd.Series(0, index=ga4_lp_agg.index))
+        ga4_lp_agg["Session to Purchase"] = safe_divide(p, s)
+        
+        sort_by = "sessions" if "sessions" in ga4_lp_agg.columns else None
+        display_table(ga4_lp_agg.sort_values(sort_by, ascending=False) if sort_by else ga4_lp_agg, 
                       show_cols=["landing_page", "sessions", "product_views", "add_to_cart", "checkout", "purchase", "revenue", "Session to Purchase"])
 
 # =========================
@@ -382,7 +372,7 @@ st.subheader("🤖 Export for AI Analysis (NotebookLM)")
 st.caption("아래 버튼을 눌러 전체 분석 결과를 하나의 텍스트 파일로 다운로드하고, NotebookLM(또는 ChatGPT)에 업로드하세요.")
 
 report_lines = []
-report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.2)\n")
+report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.3)\n")
 report_lines.append("이 데이터는 마케팅 캠페인의 매체 성과, 광고 소재, 구글애즈/GA4 랜딩페이지 퍼널 데이터가 모두 결합된 종합 진단 결과입니다.\n")
 
 if 'campaign_agg' in locals() and not campaign_agg.empty:
