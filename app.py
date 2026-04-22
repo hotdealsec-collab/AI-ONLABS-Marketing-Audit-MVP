@@ -7,7 +7,7 @@ from typing import Dict, List
 # Page Config
 # =========================
 st.set_page_config(page_title="AI-ONLABS Marketing Audit MVP", layout="wide")
-st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.0)")
+st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.1)")
 st.caption("A/B 캠페인 비교부터 광고 소재, GA4 랜딩페이지 분석까지 지원하는 퍼포먼스 마케터 전용 대시보드입니다.")
 
 # =========================
@@ -55,6 +55,11 @@ def safe_divide(num, den):
 
 def clean_google_ads_report(file) -> pd.DataFrame:
     df = pd.read_csv(file, skiprows=2)
+    
+    # [수정] 클릭수(クリック数)가 없고 상호작용(インタラクション)이 있다면 클릭수로 매핑
+    if "クリック数" not in df.columns and "インタラクション" in df.columns:
+        df = df.rename(columns={"インタラクション": "クリック数"})
+        
     df = df.rename(columns=GOOGLE_ADS_MAPPING)
     
     mask = df.astype(str).apply(lambda x: x.str.contains("合計", na=False)).any(axis=1)
@@ -124,17 +129,22 @@ def display_table(df: pd.DataFrame, show_cols: List[str]):
 # =========================
 def calculate_media_kpi(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["CTR"] = safe_divide(df["clicks"], df["impressions"])
-    df["CPC"] = safe_divide(df["spend"], df["clicks"])
+    # [수정] KeyError 방지를 위해 컬럼이 없으면 0으로 채워진 Series를 안전하게 반환
+    clicks = df.get("clicks", pd.Series(0, index=df.index))
+    impressions = df.get("impressions", pd.Series(0, index=df.index))
+    spend = df.get("spend", pd.Series(0, index=df.index))
+
+    df["CTR"] = safe_divide(clicks, impressions)
+    df["CPC"] = safe_divide(spend, clicks)
 
     if "conversions" in df.columns:
-        df["CVR"] = safe_divide(df["conversions"], df["clicks"])
-        df["CPA"] = safe_divide(df["spend"], df["conversions"])
+        df["CVR"] = safe_divide(df["conversions"], clicks)
+        df["CPA"] = safe_divide(spend, df["conversions"])
     else:
         df["CVR"], df["CPA"] = np.nan, np.nan
 
     if "revenue" in df.columns:
-        df["ROAS"] = safe_divide(df["revenue"], df["spend"])
+        df["ROAS"] = safe_divide(df["revenue"], spend)
     else:
         df["ROAS"] = np.nan
     return df
@@ -374,7 +384,7 @@ st.subheader("🤖 Export for AI Analysis (NotebookLM)")
 st.caption("아래 버튼을 눌러 전체 분석 결과를 하나의 텍스트 파일로 다운로드하고, NotebookLM(또는 ChatGPT)에 업로드하세요.")
 
 report_lines = []
-report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.0)\n")
+report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.1)\n")
 report_lines.append("이 데이터는 마케팅 캠페인의 매체 성과, 광고 소재, 구글애즈/GA4 랜딩페이지 퍼널 데이터가 모두 결합된 종합 진단 결과입니다.\n")
 
 if 'campaign_agg' in locals() and not campaign_agg.empty:
