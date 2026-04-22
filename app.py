@@ -7,7 +7,7 @@ from typing import Dict, List
 # Page Config
 # =========================
 st.set_page_config(page_title="AI-ONLABS Marketing Audit MVP", layout="wide")
-st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.3)")
+st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.4)")
 st.caption("A/B 캠페인 비교부터 광고 소재, GA4 랜딩페이지 분석까지 지원하는 퍼포먼스 마케터 전용 대시보드입니다.")
 
 # =========================
@@ -43,9 +43,13 @@ INTERNAL_ALIASES = {
 # Utilities & Preprocessing
 # =========================
 def safe_divide(num, den):
+    """안전한 나눗셈: 0으로 나누거나 무한대(inf)가 나오는 것을 원천 방지"""
     if isinstance(den, pd.Series):
-        return np.where(den > 0, num / den, 0)
-    return num / den if den > 0 else 0
+        num_val = num.values if isinstance(num, pd.Series) else num
+        den_val = den.values
+        res = np.where(den_val > 0, num_val / den_val, 0.0)
+        return pd.Series(res, index=den.index).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    return num / den if den > 0 else 0.0
 
 def clean_google_ads_report(file) -> pd.DataFrame:
     df = pd.read_csv(file, skiprows=2)
@@ -65,7 +69,7 @@ def clean_google_ads_report(file) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", "", regex=False).str.replace(" --", "0", regex=False).str.replace("--", "0", regex=False)
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df
 
 def prepare_internal_df(file) -> pd.DataFrame:
@@ -80,7 +84,6 @@ def prepare_internal_df(file) -> pd.DataFrame:
                 break
     df = df.rename(columns=rename_map)
     
-    # [핵심 수정] PyArrow 에러 방지를 위해 텍스트 컬럼 명시적 형변환
     for col in ["campaign", "landing_page"]:
         if col in df.columns:
             df[col] = df[col].fillna("Unknown").astype(str)
@@ -89,7 +92,7 @@ def prepare_internal_df(file) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace(",", "", regex=False)
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df
 
 def status_color(action: str) -> str:
@@ -104,7 +107,20 @@ def style_action(val):
     return f"background-color: {status_color(val)}"
 
 def display_table(df: pd.DataFrame, show_cols: List[str]):
+    """PyArrow 에러를 방지하는 절대 안전 테이블 렌더러"""
     display_df = df[[c for c in show_cols if c in df.columns]].copy()
+    
+    # [핵심 방어 로직] 텍스트와 숫자를 명확히 분리하고, NaN/Inf를 0으로 강제 변환
+    numeric_metrics = ["spend", "impressions", "clicks", "conversions", "revenue", 
+                       "sessions", "product_views", "add_to_cart", "checkout", "purchase", 
+                       "CTR", "CPC", "CVR", "CPA", "ROAS", "Session to Purchase"]
+    
+    for col in display_df.columns:
+        if col in numeric_metrics:
+            display_df[col] = pd.to_numeric(display_df[col], errors='coerce').fillna(0.0)
+        elif col != "action":
+            display_df[col] = display_df[col].astype(str)
+
     styler = display_df.style
     
     if "action" in display_df.columns:
@@ -119,16 +135,21 @@ def display_table(df: pd.DataFrame, show_cols: List[str]):
         "Session to Purchase": "{:.2%}"
     }
     valid_format = {k: v for k, v in base_format.items() if k in display_df.columns}
-    st.dataframe(styler.format(valid_format, na_rep="-"), use_container_width=True)
+    
+    # [Fallback 로직] 포맷팅 중 알 수 없는 에러가 발생해도, 원본 테이블을 보여주어 앱 멈춤 방지
+    try:
+        st.dataframe(styler.format(valid_format, na_rep="-"), use_container_width=True)
+    except Exception as e:
+        st.dataframe(display_df, use_container_width=True)
 
 # =========================
 # Core KPI & Logic
 # =========================
 def calculate_media_kpi(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    clicks = df.get("clicks", pd.Series(0, index=df.index))
-    impressions = df.get("impressions", pd.Series(0, index=df.index))
-    spend = df.get("spend", pd.Series(0, index=df.index))
+    clicks = df.get("clicks", pd.Series(0.0, index=df.index))
+    impressions = df.get("impressions", pd.Series(0.0, index=df.index))
+    spend = df.get("spend", pd.Series(0.0, index=df.index))
 
     df["CTR"] = safe_divide(clicks, impressions)
     df["CPC"] = safe_divide(spend, clicks)
@@ -162,6 +183,28 @@ def assign_action(row: pd.Series, thresholds: Dict[str, float]) -> str:
     if ctr >= thresholds["high_ctr"] and (cvr < thresholds["good_cvr"] or cpa > thresholds["max_cpa"]): return "OPTIMIZE"
     if ctr <= thresholds["low_ctr"] and spend >= thresholds["reduce_spend_limit"]: return "REDUCE"
     return "HOLD"
+
+# 백그라운드 키워드 분류
+BRAND_TERMS_DEFAULT = ["brand", "official", "company", "ganzo"]
+CATEGORY_TERMS_DEFAULT = ["wallet", "bag", "backpack", "tote", "crossbody", "財布", "バッグ"]
+INFO_TERMS_DEFAULT = ["how", "what", "best", "review", "reviews", "compare", "おすすめ", "比較"]
+COMPETITOR_TERMS_DEFAULT = ["amazon", "rakuten", "zozo", "temu", "shein", "楽天", "土屋鞄"]
+NOISE_TERMS_DEFAULT = ["free", "download", "job", "求人", "中古", "used", "repair", "修理", "買取"]
+
+term_lists = {
+    "brand_terms": BRAND_TERMS_DEFAULT, "category_terms": CATEGORY_TERMS_DEFAULT,
+    "info_terms": INFO_TERMS_DEFAULT, "competitor_terms": COMPETITOR_TERMS_DEFAULT, "noise_terms": NOISE_TERMS_DEFAULT
+}
+
+def classify_keyword(term: str, term_lists: Dict[str, List[str]]) -> str:
+    if not isinstance(term, str) or term.strip() == "": return "Unknown"
+    t = term.lower().strip()
+    if any(x in t for x in term_lists["brand_terms"]): return "Brand"
+    if any(x in t for x in term_lists["competitor_terms"]): return "Competitor"
+    if any(x in t for x in term_lists["noise_terms"]): return "Noise"
+    if any(x in t for x in term_lists["info_terms"]): return "Informational"
+    if any(x in t for x in term_lists["category_terms"]): return "Category"
+    return "Other"
 
 # =========================
 # Sidebar Controls
@@ -290,6 +333,7 @@ if keyword_file:
         if "campaign" in kw_df_raw.columns: group_cols.insert(0, "campaign")
         kw_df = kw_df_raw.groupby(group_cols, dropna=False)[t_cols].sum().reset_index()
         kw_df = calculate_media_kpi(kw_df)
+        kw_df["keyword_class"] = kw_df["keyword"].apply(lambda x: classify_keyword(x, term_lists))
         
         def assign_keyword_action(row):
             if row['spend'] >= thresholds['term_cost_remove'] and row.get('conversions', 0) == 0: return "REMOVE"
@@ -298,7 +342,7 @@ if keyword_file:
             
         kw_df["action"] = kw_df.apply(assign_keyword_action, axis=1)
         display_table(kw_df.sort_values("spend", ascending=False), 
-                      show_cols=["campaign", "keyword", "action", "spend", "clicks", "CTR", "conversions", "CPA"])
+                      show_cols=["campaign", "keyword", "keyword_class", "action", "spend", "clicks", "CTR", "conversions", "CPA"])
 
 # --- 5. Ad / Creative Audit ---
 if ad_file:
@@ -338,9 +382,8 @@ if internal_file:
     if not internal_df.empty and "campaign" in internal_df.columns:
         camp_funnel = internal_df.groupby("campaign", dropna=False).sum(numeric_only=True).reset_index()
         
-        # 컬럼 안전 가져오기 (에러 방지)
-        p = camp_funnel.get("purchase", pd.Series(0, index=camp_funnel.index))
-        s = camp_funnel.get("sessions", pd.Series(0, index=camp_funnel.index))
+        p = camp_funnel.get("purchase", pd.Series(0.0, index=camp_funnel.index))
+        s = camp_funnel.get("sessions", pd.Series(0.0, index=camp_funnel.index))
         camp_funnel["Session to Purchase"] = safe_divide(p, s)
         
         sort_by = "sessions" if "sessions" in camp_funnel.columns else None
@@ -355,9 +398,8 @@ if ga4_lp_file:
     if not ga4_lp_df.empty and "landing_page" in ga4_lp_df.columns:
         ga4_lp_agg = ga4_lp_df.groupby("landing_page", dropna=False).sum(numeric_only=True).reset_index()
         
-        # 컬럼 안전 가져오기 (에러 방지)
-        p = ga4_lp_agg.get("purchase", pd.Series(0, index=ga4_lp_agg.index))
-        s = ga4_lp_agg.get("sessions", pd.Series(0, index=ga4_lp_agg.index))
+        p = ga4_lp_agg.get("purchase", pd.Series(0.0, index=ga4_lp_agg.index))
+        s = ga4_lp_agg.get("sessions", pd.Series(0.0, index=ga4_lp_agg.index))
         ga4_lp_agg["Session to Purchase"] = safe_divide(p, s)
         
         sort_by = "sessions" if "sessions" in ga4_lp_agg.columns else None
@@ -372,7 +414,7 @@ st.subheader("🤖 Export for AI Analysis (NotebookLM)")
 st.caption("아래 버튼을 눌러 전체 분석 결과를 하나의 텍스트 파일로 다운로드하고, NotebookLM(또는 ChatGPT)에 업로드하세요.")
 
 report_lines = []
-report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.3)\n")
+report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.4)\n")
 report_lines.append("이 데이터는 마케팅 캠페인의 매체 성과, 광고 소재, 구글애즈/GA4 랜딩페이지 퍼널 데이터가 모두 결합된 종합 진단 결과입니다.\n")
 
 if 'campaign_agg' in locals() and not campaign_agg.empty:
@@ -408,6 +450,6 @@ full_report_text = "\n\n".join(report_lines)
 st.download_button(
     label="📥 Download Full Audit Report (.txt)",
     data=full_report_text,
-    file_name="AI_ONLABS_Audit_Report_v2_clean.txt",
+    file_name="AI_ONLABS_Audit_Report_v2_robust.txt",
     mime="text/plain"
 )
