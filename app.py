@@ -7,7 +7,7 @@ from typing import Dict, List
 # Page Config
 # =========================
 st.set_page_config(page_title="AI-ONLABS Marketing Audit MVP", layout="wide")
-st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.1)")
+st.title("🚀 AI-ONLABS Marketing Audit MVP (v2.2)")
 st.caption("A/B 캠페인 비교부터 광고 소재, GA4 랜딩페이지 분석까지 지원하는 퍼포먼스 마케터 전용 대시보드입니다.")
 
 # =========================
@@ -39,11 +39,20 @@ INTERNAL_ALIASES = {
     "revenue": ["revenue", "sales", "value", "収益", "総収益", "合計収益"],
 }
 
+# 백그라운드에서 동작할 기본 키워드 룰
 BRAND_TERMS_DEFAULT = ["brand", "official", "company", "ganzo"]
 CATEGORY_TERMS_DEFAULT = ["wallet", "bag", "backpack", "tote", "crossbody", "財布", "バッグ"]
 INFO_TERMS_DEFAULT = ["how", "what", "best", "review", "reviews", "compare", "おすすめ", "比較"]
 COMPETITOR_TERMS_DEFAULT = ["amazon", "rakuten", "zozo", "temu", "shein", "楽天", "土屋鞄"]
 NOISE_TERMS_DEFAULT = ["free", "download", "job", "求人", "中古", "used", "repair", "修理", "買取"]
+
+term_lists = {
+    "brand_terms": BRAND_TERMS_DEFAULT,
+    "category_terms": CATEGORY_TERMS_DEFAULT,
+    "info_terms": INFO_TERMS_DEFAULT,
+    "competitor_terms": COMPETITOR_TERMS_DEFAULT,
+    "noise_terms": NOISE_TERMS_DEFAULT,
+}
 
 # =========================
 # Utilities & Preprocessing
@@ -56,7 +65,6 @@ def safe_divide(num, den):
 def clean_google_ads_report(file) -> pd.DataFrame:
     df = pd.read_csv(file, skiprows=2)
     
-    # [수정] 클릭수(クリック数)가 없고 상호작용(インタラクション)이 있다면 클릭수로 매핑
     if "クリック数" not in df.columns and "インタラクション" in df.columns:
         df = df.rename(columns={"インタラクション": "クリック数"})
         
@@ -129,7 +137,6 @@ def display_table(df: pd.DataFrame, show_cols: List[str]):
 # =========================
 def calculate_media_kpi(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # [수정] KeyError 방지를 위해 컬럼이 없으면 0으로 채워진 Series를 안전하게 반환
     clicks = df.get("clicks", pd.Series(0, index=df.index))
     impressions = df.get("impressions", pd.Series(0, index=df.index))
     spend = df.get("spend", pd.Series(0, index=df.index))
@@ -207,15 +214,6 @@ thresholds = {
     "min_clicks": st.sidebar.number_input("최소 클릭수", value=10.0, step=1.0),
     "kill_clicks": st.sidebar.number_input("Kill 클릭 기준(전환 0)", value=30.0, step=1.0),
     "term_cost_remove": st.sidebar.number_input("키워드 제외 기준 비용", value=1000.0, step=100.0),
-}
-
-st.sidebar.header("🧠 5. Keyword Rules")
-term_lists = {
-    "brand_terms": [x.strip().lower() for x in st.sidebar.text_area("Brand terms", value=",".join(BRAND_TERMS_DEFAULT)).split(",") if x.strip()],
-    "category_terms": [x.strip().lower() for x in st.sidebar.text_area("Category terms", value=",".join(CATEGORY_TERMS_DEFAULT)).split(",") if x.strip()],
-    "info_terms": [x.strip().lower() for x in st.sidebar.text_area("Info terms", value=",".join(INFO_TERMS_DEFAULT)).split(",") if x.strip()],
-    "competitor_terms": [x.strip().lower() for x in st.sidebar.text_area("Competitor terms", value=",".join(COMPETITOR_TERMS_DEFAULT)).split(",") if x.strip()],
-    "noise_terms": [x.strip().lower() for x in st.sidebar.text_area("Noise terms", value=",".join(NOISE_TERMS_DEFAULT)).split(",") if x.strip()],
 }
 
 # =========================
@@ -384,7 +382,7 @@ st.subheader("🤖 Export for AI Analysis (NotebookLM)")
 st.caption("아래 버튼을 눌러 전체 분석 결과를 하나의 텍스트 파일로 다운로드하고, NotebookLM(또는 ChatGPT)에 업로드하세요.")
 
 report_lines = []
-report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.1)\n")
+report_lines.append("# AI-ONLABS Marketing Audit Full Report (v2.2)\n")
 report_lines.append("이 데이터는 마케팅 캠페인의 매체 성과, 광고 소재, 구글애즈/GA4 랜딩페이지 퍼널 데이터가 모두 결합된 종합 진단 결과입니다.\n")
 
 if 'campaign_agg' in locals() and not campaign_agg.empty:
@@ -420,6 +418,6 @@ full_report_text = "\n\n".join(report_lines)
 st.download_button(
     label="📥 Download Full Audit Report (.txt)",
     data=full_report_text,
-    file_name="AI_ONLABS_Audit_Report_v2.txt",
+    file_name="AI_ONLABS_Audit_Report_v2_clean.txt",
     mime="text/plain"
 )
